@@ -1033,15 +1033,35 @@ In `dropConn`, arm the timer whenever a session exists (not only mid-match), and
       this.emptyResetTimer = setTimeout(() => {
         if (this.conns.size === 0) this.endEmptySession();
       }, EMPTY_RESET_MS);
+      this.emptyResetTimer.unref?.(); // a test that drops its last socket must not wait a minute
     }
 ```
 
-- [ ] **Step 4: Run to verify they pass**
+- [ ] **Step 4: Bring the Task 4/5 tests through the gate**
+
+Those tests seat players with a bare `join`, which the gate now refuses. Replace the shared `seated()` helper at the top of the test file with one that mints a session first — one edit, and every test that used it keeps meaning what it meant:
+
+```js
+// a joined connection: hosts the session if nobody has, then seats itself
+function seated(kit, name = 'GANDALF') {
+  if (!kit.room.session) {
+    const opener = kit.connect({ name: 'OPENER' });
+    opener.emit({ t: 'host' });
+  }
+  const ws = kit.connect({ name });
+  ws.emit({ t: 'join', name, code: kit.room.session.code });
+  return ws;
+}
+```
+
+Then fix the two tests that write their own `join`: the reconnect test in Task 5 rejoins with `{ t: 'join', name: 'gandalf', code: kit.room.session.code }`, and its `you`-slot assertion becomes `1` — the opener above now holds slot 0.
+
+- [ ] **Step 5: Run to verify they pass**
 
 Run: `node --test test/room.test.js && npm test`
-Expected: PASS. If the reconnect test from Task 5 now fails, it is because a rejoin needs the code too — add `code` to its `join` message; that is correct behavior.
+Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add server/room.js test/room.test.js

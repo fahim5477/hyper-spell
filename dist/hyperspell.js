@@ -29,9 +29,9 @@
     mod
   ));
 
-  // node_modules/matter-js/build/matter.js
+  // ../hyper-spell/node_modules/matter-js/build/matter.js
   var require_matter = __commonJS({
-    "node_modules/matter-js/build/matter.js"(exports, module) {
+    "../hyper-spell/node_modules/matter-js/build/matter.js"(exports, module) {
       (function webpackUniversalModuleDefinition(root2, factory) {
         if (typeof exports === "object" && typeof module === "object")
           module.exports = factory();
@@ -17048,7 +17048,13 @@
   var packInstalled = false;
   var hooks = { status() {
   }, welcome() {
+  }, session() {
+  }, sessionState() {
+  }, denied() {
   } };
+  var sessionCodeValue = null;
+  var prevCast = false;
+  var nextJoinAt = 0;
   function netMode2() {
     return netMode;
   }
@@ -17112,6 +17118,13 @@
       handleMessage(msg);
     };
   }
+  function hostSession() {
+    emit({ t: "host" });
+  }
+  function joinSession(code) {
+    sessionCodeValue = code;
+    emit({ t: "join", name: myName(), code });
+  }
   function handleMessage(msg) {
     switch (msg.t) {
       case "welcome":
@@ -17120,9 +17133,23 @@
           ws.close();
           return;
         }
+        hooks.welcome({ sessionLive: !!msg.session });
+        break;
+      case "session":
+        sessionCodeValue = msg.code;
+        try {
+          sessionStorage.setItem("hs-code", msg.code);
+        } catch {
+        }
         setNetMode("online");
-        hooks.welcome();
-        emit({ t: "join", name: myName() });
+        if (msg.host) emit({ t: "join", name: myName(), code: msg.code });
+        hooks.session({ code: msg.code, host: !!msg.host });
+        break;
+      case "sessionState":
+        hooks.sessionState({ live: !!msg.live });
+        break;
+      case "sessionDenied":
+        hooks.denied(msg.reason);
         break;
       case "badVersion":
         setBanner("GAME UPDATED \u2014 REFRESH THE PAGE", "#ff6b81", 6e4);
@@ -17136,7 +17163,8 @@
         serverWorld = msg;
         break;
       case "joinDenied":
-        joinDeniedMsg = msg.reason === "full" ? "match is full (8 wizards) \u2014 spectating" : "join refused \u2014 spectating";
+        joinDeniedMsg = msg.reason === "full" ? "match is full (8 wizards) \u2014 spectating" : msg.reason === "code" ? "wrong code" : msg.reason === "nosession" ? "no session is running yet" : "join refused \u2014 spectating";
+        hooks.denied(msg.reason);
         break;
       case "snap":
         pushSnapshot(msg);
@@ -17264,7 +17292,11 @@
       const me = snapCur.ps.find((q) => q.s === mySlot);
       if (me) aim = Math.atan2(mouse.y - me.y, mouse.x - me.x);
     }
-    if (!joined && (cast || mouse.down)) emit({ t: "join", name: myName() });
+    if (!joined && sessionCodeValue && cast && !prevCast && now > nextJoinAt) {
+      nextJoinAt = now + 1e3;
+      emit({ t: "join", name: myName(), code: sessionCodeValue });
+    }
+    prevCast = cast;
     if (joined) emit({ t: "input", m: move, j: jump ? 1 : 0, c: cast ? 1 : 0, c2: cast2 ? 1 : 0, b: block ? 1 : 0, a: aim });
     const edge = (code, fn) => {
       if (keys[code] && !this[`_${code}`]) fn();
@@ -17298,7 +17330,9 @@
       slots,
       readyColor: ready ? wave ? "#ffd166" : "#7bd88f" : "#675a7d",
       readyLine: !ready ? wave ? "NEED AT LEAST 1 WIZARD" : "NEED AT LEAST 2 WIZARDS" : wave ? `SPACE \u2014 WAVE SURVIVAL${snap.bw ? `  (BEST: WAVE ${snap.bw})` : ""}` : `SPACE TO FIGHT \u2014 FIRST TO ${snap.wn} WINS`,
-      controlsLine: wave ? "M switches back to VERSUS \xB7 co-op: everyone fights the waves together \xB7 B adds a bot" : `M = WAVE SURVIVAL \xB7 1\u20139 sets win target (${snap.wn}) \xB7 B adds a bot \xB7 R resets`
+      // the code stays on screen for the whole lobby, so whoever is in the room
+      // can read it to a latecomer without going back to the menu
+      controlsLine: (sessionCodeValue ? `CODE ${sessionCodeValue.slice(0, 3)}-${sessionCodeValue.slice(3)} \xB7 ` : "") + (wave ? "M switches back to VERSUS \xB7 co-op: everyone fights the waves together \xB7 B adds a bot" : `M = WAVE SURVIVAL \xB7 1\u20139 sets win target (${snap.wn}) \xB7 B adds a bot \xB7 R resets`)
     });
   }
   var fxLoop = createTickLoop({ step: () => {
@@ -17483,9 +17517,75 @@
     <div id="netstatus" style="color:#675a7d;font-size:13px;margin-top:10px"></div>`;
     document.body.appendChild(menu);
     const statusEl = () => document.getElementById("netstatus");
+    const setStatus = (text) => {
+      const el = statusEl();
+      if (el) el.textContent = text;
+    };
     const nameInput = menu.querySelector("#netname");
     nameInput.value = localStorage.getItem("hs-name-0") || "";
     for (const ev of ["keydown", "keyup"]) nameInput.addEventListener(ev, (e) => e.stopPropagation());
+    const urlCode = new URLSearchParams(location.search).get("code") || "";
+    let storedCode = "";
+    try {
+      storedCode = sessionStorage.getItem("hs-code") || "";
+    } catch {
+    }
+    const panel = document.createElement("div");
+    panel.id = "hspanel";
+    panel.style.cssText = "display:none;flex-direction:column;gap:12px;align-items:center;";
+    menu.appendChild(panel);
+    function showSessionScreen(sessionLive) {
+      for (const b of menu.querySelectorAll("button[data-mode]")) b.style.display = "none";
+      nameInput.style.display = "none";
+      panel.style.display = "flex";
+      panel.innerHTML = sessionLive ? `<div style="color:#9c8ab8;font-size:14px">a session is running on this server \u2014 enter its code</div>
+         <input id="hscode" maxlength="9" placeholder="ABC-DEF" autocomplete="off"
+           style="min-width:280px;padding:12px 20px;font-family:Menlo,monospace;font-size:24px;text-align:center;letter-spacing:.25em;background:transparent;border:2px solid #675a7d;color:#e8d5ff;border-radius:8px;text-transform:uppercase;outline:none;">
+         <button data-act="join" style="${btnCss("#ffd166")}">JOIN THE SESSION</button>` : `<div style="color:#9c8ab8;font-size:14px">no session is running \u2014 start one and share the code</div>
+         <button data-act="host" style="${btnCss("#7bd88f")}">START A SESSION</button>`;
+      const codeInput = panel.querySelector("#hscode");
+      if (!codeInput) return;
+      codeInput.value = urlCode || storedCode;
+      for (const ev of ["keydown", "keyup"]) codeInput.addEventListener(ev, (e) => e.stopPropagation());
+      codeInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") joinSession(codeInput.value);
+      });
+      codeInput.focus();
+      if (urlCode) {
+        setStatus("joining\u2026");
+        joinSession(urlCode);
+      }
+    }
+    let inviteLink = "";
+    function showCodeScreen(code) {
+      inviteLink = `${location.origin}/?code=${encodeURIComponent(code)}`;
+      panel.innerHTML = `
+      <div style="color:#9c8ab8;font-size:14px">your session is live \u2014 share this</div>
+      <div id="hscodebig" style="font:900 64px Menlo,monospace;letter-spacing:.15em;color:#ffd166;text-shadow:0 0 22px rgba(255,209,102,.5)"></div>
+      <button data-act="copy" style="${btnCss("#4ecdc4")}">COPY THE INVITE LINK</button>
+      <button data-act="play" style="${btnCss("#ffd166")}">ENTER THE LOBBY</button>`;
+      panel.querySelector("#hscodebig").textContent = `${code.slice(0, 3)}-${code.slice(3)}`;
+      setStatus("the code stays on screen in the lobby too");
+    }
+    panel.addEventListener("click", (e) => {
+      const act = e.target?.dataset?.act;
+      if (act === "host") {
+        setStatus("starting a session\u2026");
+        hostSession();
+      }
+      if (act === "join") {
+        setStatus("joining\u2026");
+        joinSession(panel.querySelector("#hscode").value);
+      }
+      if (act === "play") menu.remove();
+      if (act === "copy") {
+        navigator.clipboard?.writeText(inviteLink).then(() => {
+          e.target.textContent = "COPIED \u2014 PASTE IT IN SLACK";
+        }).catch(() => {
+          e.target.textContent = inviteLink;
+        });
+      }
+    });
     menu.addEventListener("click", (e) => {
       const mode = e.target?.dataset?.mode;
       if (!mode) return;
@@ -17497,14 +17597,20 @@
         menu.remove();
         return;
       }
+      setStatus("connecting\u2026");
       connect({
-        status(text) {
-          const el = statusEl();
-          if (el) el.textContent = text;
+        status: setStatus,
+        welcome: ({ sessionLive }) => showSessionScreen(sessionLive),
+        // a session this tab did not mint means we are in and playing; one it did
+        // mint shows the code first
+        session: ({ code, host }) => {
+          if (host) showCodeScreen(code);
+          else menu.remove();
         },
-        welcome() {
-          menu.remove();
-        }
+        sessionState: ({ live }) => showSessionScreen(live),
+        denied: (reason) => setStatus(
+          reason === "exists" ? "someone else just started one \u2014 enter their code" : reason === "code" ? "that code does not match \u2014 check it and try again" : reason === "full" ? "the match is full \u2014 you are watching" : "no session is running yet"
+        )
       });
     });
   }

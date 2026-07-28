@@ -2,7 +2,7 @@
 import { W, H } from '../world.js';
 import { bodyById, queryRadius, setAngularVelocity, setVelocity } from '../phys/facade.js';
 import { simRandom, rand } from '../rng.js';
-import { emitParticle, spawnParticles, spawnRing, spawnBurst } from '../fx.js';
+import { particles, spawnParticles, spawnRing, spawnBurst } from '../fx.js';
 import { sfx } from '../sfx.js';
 import { game } from '../match.js';
 import { activeEffects, loose } from '../spells/core.js';
@@ -38,7 +38,7 @@ export function updateGhosts(now) {
           y: Math.max(-6, Math.min(6, (g.y + 26 - held.position.y) * 0.18)),
         });
         setAngularVelocity(held, held.angularVelocity * 0.9);
-        if (simRandom() < 0.2) emitParticle({ kind: 'spark', x: held.position.x + rand(-8, 8), y: held.position.y + rand(-8, 8), vx: 0, vy: -0.6, life: 14, maxLife: 14, color: '#e8d5ff', r: 1.5 });
+        if (simRandom() < 0.2) particles.push({ kind: 'spark', x: held.position.x + rand(-8, 8), y: held.position.y + rand(-8, 8), vx: 0, vy: -0.6, life: 14, maxLife: 14, color: '#e8d5ff', r: 1.5 });
       }
     } else if (c.cast) {
       // grab if a loose prop is in reach, otherwise the classic gust
@@ -93,10 +93,13 @@ export function ghostMark(p, g, now) {
   activeEffects.push({
     until: now + 4000,
     net: { k: 'zone', x: mx, y: my, r: 30, c: p.color }, // LAN clients see the pulse
-    // the only sim effect whose picture needs an artkit primitive rather than
-    // raw canvas calls; the descriptor says which, and render/effect-art.js owns
-    // the rest
-    art: { k: 'rune', x: mx, y: my, c: p.color },
+    // art is the artkit namespace the renderer hands in; this is the only sim
+    // effect that needs a drawing primitive beyond the raw context
+    draw(nw, ctx, art) {
+      ctx.globalAlpha = 0.75;
+      art.runeRing(ctx, mx, my, 24, p.color, nw, { count: 6, lw: 1.2, alpha: 0.8, spin: 0.003 });
+      ctx.globalAlpha = 1;
+    },
   });
 }
 

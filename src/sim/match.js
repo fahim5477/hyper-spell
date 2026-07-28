@@ -6,8 +6,7 @@ import { clearModifiers, setBase } from './gravity.js';
 import { simNow } from './time.js';
 import { simRandom, rand, reseed } from './rng.js';
 import { pairCooldown } from './cooldown.js';
-import { emit } from './emit.js';
-import { clearFx, doFlash } from './fx.js';
+import { particles, doFlash } from './fx.js';
 import { slowMo } from './pace.js';
 import { sfx } from './sfx.js';
 import { scheduleIn, cancelTag } from './schedule.js';
@@ -39,21 +38,11 @@ export function setCurrentMap(m) { currentMap = m; }
 export let banner = '', bannerColor = '#fff', bannerUntil = 0, bannerHyper = false;
 
 
-// A dual-path cosmetic (see the four of them listed in src/sim/fx.js): the
-// banner is sim state — src/render/hud.js and the wire snapshot both read it —
-// so it is set here AND emitted so a LAN client can show the same words. The
-// renderer's handler is a no-op; locally the banner is already set.
-// The rest form is not a stylistic choice: the emitted `a` is JSON-encoded onto
-// the wire, and padding a trailing optional out to `undefined` would arrive as
-// `null` and defeat the receiver's default. The old broadcast wrapper forwarded
-// the caller's arity for the same reason; so does this.
-export function setBanner(...a) {
-  const [text, color, ms = 1400, hyper = false] = a;
+function baseSetBanner(text, color, ms = 1400, hyper = false) {
   banner = text;
   bannerColor = color;
   bannerUntil = simNow() + ms;
   bannerHyper = hyper;
-  emit('setBanner', ...a);
 }
 
 export function loadMap(index) {
@@ -75,7 +64,7 @@ export function loadMap(index) {
   // (a body, a gravity modifier) a hook to let go of it.
   for (const e of activeEffects) e.onAbandon?.();
   activeEffects.length = 0;
-  clearFx(); // the renderer drops its particle field; nothing here owns one
+  particles.length = 0;
   // Every contact gate goes with the round. The bodies most of them are keyed
   // on have just been removed above, but the wizards' have not — a player
   // object outlives the round, and its stomp/spike gates used to outlive it too.
@@ -273,6 +262,10 @@ export function joinPlayer(controller, name) {
   setBanner(`${p.name} JOINED`, p.color, 900);
 }
 
+// the server bridge wraps setBanner so LAN clients replay it
+// (server/sim-bridge.js:48 reassigned the global)
+export let setBanner = baseSetBanner;
+export function setSetBanner(fn) { setBanner = fn; }
 
 const INITIAL_GAME = { state: 'LOBBY', winsNeeded: 5, winner: null, mapIndex: 0, baseGravity: 2, mode: 'versus', wave: 0, waveState: 'active' };
 

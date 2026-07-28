@@ -107,20 +107,6 @@ function emit(msg) {
   if (!ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify(msg));
 }
-
-// The name the opening menu stored for player 1 (src/platform/menu.js writes
-// this key). It rides `hello` and every join, and it is also the key the room
-// matches a reconnect against (server/room.js reserves a dropped seat by name),
-// so it has to be the same string every time this tab asks for a seat.
-//
-// This helper was lost in the ESM refactor: the three calls survived, the
-// definition did not, so ws.onopen threw before `hello` could be sent and the
-// server never marked the connection as having said hello — which is the one
-// thing it requires before it will seat anybody. Nobody could join an online
-// match. test/no-undefined-identifiers.test.js now fails on that class of loss.
-function myName() {
-  return cleanName(localStorage.getItem('hs-name-0') || '') || 'WIZARD';
-}
 export function connect(h) {
   hooks = h || hooks;
   hooks.status('connecting…');

@@ -239,24 +239,27 @@ const SFX_DEFS = {
   },
 };
 
-// The one way to make a sound. Every play passes the anti-clutter gate first.
+// public voice table: every play passes the anti-clutter gate first.
 //
-// This used to overwrite src/sim/sfx.js's no-op stubs in place, which made the
-// sim's cue table mean different things depending on which modules a bundle had
-// imported — and the server bridge then wrapped the same object again to
-// broadcast. The sim emits a cue name now (src/sim/emit.js); this is the
-// renderer's half of that, reached from src/render/fx.js's applyEmitted and
-// from src/net/client.js when the cue arrives off the wire.
-export function playSfx(key) {
-  const fn = SFX_DEFS[key];
-  if (!fn || !audioCtx) return;
-  const s = gateScale(key);
-  if (!s) return;
-  volScale = s;
-  try { fn(); } finally { volScale = 1; }
+// These used to be written back over the stub table in sim/sfx.js. They are
+// not any more: the sim's table emits cue events, and this is what a cue
+// SOUNDS like. src/render/fx.js's applyEmitted is the only caller, so the couch
+// player, a LAN client and the killcam all reach the voices by the same route.
+const VOICES = {};
+for (const [key, fn] of Object.entries(SFX_DEFS)) {
+  VOICES[key] = () => {
+    if (!audioCtx) return;
+    const s = gateScale(key);
+    if (!s) return;
+    volScale = s;
+    try { fn(); } finally { volScale = 1; }
+  };
 }
 
-// Every cue the sim can fire has a voice here. A key added to SFX_KEYS with no
-// SFX_DEFS entry would simply never make a sound, which is exactly the kind of
-// silent gap this whole task is about; test/sim-purity.test.js pins it.
-export const sfxVoices = () => Object.keys(SFX_DEFS);
+// Unknown cue keys are ignored rather than thrown on: this is fed straight from
+// the wire, where the name is whatever the server said.
+export function playSfx(key) { VOICES[key]?.(); }
+
+// the keys that actually make a sound — SFX_KEYS is the sim's list of cues it
+// can fire, and a cue with no voice yet is legal (it just plays nothing)
+export const voiceKeys = () => Object.keys(VOICES);

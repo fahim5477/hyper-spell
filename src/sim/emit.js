@@ -2,27 +2,24 @@
 // state: particles, screen shake, flashes, banners, sounds, kill-feed lines.
 //
 // Locally the renderer drains this queue once per frame (src/render/fx.js's
-// applyEmitted); online src/net/server-bridge.js drains it once per tick and
-// forwards the wire-visible names. One queue, so couch and online stop being
-// two code paths — the fx monkeypatch that used to exist only server-side
-// (wrapServerFx, deleted in task 13) is now the actual architecture.
+// applyEmitted); online the server bridge drains it once per tick and puts the
+// allowlisted names on the wire. One queue, so couch and online stop being two
+// code paths — the couch player now runs the same event path a LAN client has
+// always run, instead of the sim calling the renderer directly and the server
+// monkeypatching those calls to fake an event stream (defect D3).
 //
-// This module is a leaf: it imports nothing, so any sim module can emit without
-// risking an import cycle. Ownership of the queue's lifetime therefore sits
-// with its drainers — src/sim/match.js clears it on round load, and
-// installServerBridge/uninstallServerBridge clear it around a sim's life.
+// The event shape is the wire shape on purpose: { f: name, a: args }. The
+// server bridge forwards these objects verbatim, so there is no translation
+// step that could quietly reorder or reshape them.
+import { onWorldReset } from './world.js';
+
 const queue = [];
 
-// `name` is the cosmetic's name; `args` are its call arguments, forwarded with
-// the arity the caller used. Arity matters: the wire JSON-encodes `a`, and
-// padding a trailing optional out to `undefined` would arrive as `null` and
-// defeat the receiving function's default.
-export function emit(name, ...args) {
-  queue.push({ f: name, a: args });
-}
+// Order is the contract. Cosmetics narrate a tick — a flash, then the ring,
+// then the text — and a consumer that saw them out of order would draw the
+// wrong story. push/slice preserves emission order end to end.
+export function emit(name, ...args) { queue.push({ f: name, a: args }); }
 
-// Takes the queue and leaves it empty, so two drainers can never both deliver
-// the same event and a drainer that throws mid-apply cannot replay it.
 export function drainEmitted() {
   const out = queue.slice();
   queue.length = 0;
@@ -31,4 +28,7 @@ export function drainEmitted() {
 
 export const emittedCount = () => queue.length;
 
-export function clearEmitted() { queue.length = 0; }
+// A world reset throws the picture away (src/render/fx.js clears the particle
+// field on the same hook), so events queued for a world that no longer exists
+// must go with it rather than arriving one frame into the next round.
+onWorldReset(() => { queue.length = 0; });

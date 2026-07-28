@@ -1,41 +1,48 @@
-// fx.js — the particle field: spawning it, stepping it, drawing it, and the
-// screen shake and full-screen flash that travel with it.
+// fx.js — the particle field, the screen shake and the flash.
 //
-// All of this used to live in src/sim/fx.js, where it drew from the sim's
-// seeded stream and was monkeypatched by the server bridge so a headless host
-// could broadcast it. It is render state now. The sim emits an intention
-// (src/sim/emit.js) and applyEmitted below turns each one into pixels — which
-// is the same code path the online client already used for the host's fx, so
-// couch and online finally run one implementation instead of two.
+// All of this used to live in src/sim/fx.js, because every spawner drew from
+// the sim's seeded stream and was therefore part of the deterministic sequence
+// a replay depends on. That was the coupling, not a reason for it: a change to
+// how many sparks a hit throws off moved every gameplay roll after it, and the
+// draw path (blizzard's zone, the victory confetti) reached into the same
+// stream at monitor rate, so a 144Hz couch player and a 60Hz one diverged.
 //
-// Math.random on purpose: cosmetic randomness must NOT touch the round stream
-// (test/module-boundaries.test.js says as much in the other direction). Two
-// browsers watching the same match will scatter their sparks differently and
-// that is correct — the particles were never part of the simulation.
+// Now the sim only says WHAT happened — `emit('spawnParticles', x, y, …)` —
+// and this module decides what that looks like, using ordinary Math.random.
+// Cosmetic randomness is deliberately outside the sim's stream
+// (test/module-boundaries.test.js says so out loud), which is what lets the
+// couch renderer, a LAN client and the killcam all run the same code.
 import { ctx } from './canvas.js';
 import { drawStoryParticles } from './artkit.js';
-import { playSfx } from './audio.js';
 import { onWorldReset } from '../sim/world.js';
-import { MAX_CATCHUP, currentTick } from '../sim/time.js';
+import { drainEmitted } from '../sim/emit.js';
+import { playSfx } from './audio.js';
+import { boltVisual } from './effects.js';
 
 export const particles = [];
 export let shake = 0;
 export let flashColor = '#fff', flashAlpha = 0;
 
-// the draw loop decays both every frame; fx only ever adds to them
+// the draw loop decays both every frame; the fx path only ever adds to them
 export function setShake(v) { shake = v; }
 export function setFlashAlpha(v) { flashAlpha = v; }
 
-const rnd = () => Math.random();
-const rr = (a, b) => a + Math.random() * (b - a);
+// Cosmetic randomness: not the round stream, on purpose. See the header.
+// Exported because the draw path needs it too — src/render/draw-world.js's
+// scenery (lava spit, torch glints, victory confetti) used to reach for
+// src/sim/rng.js from inside draw(), which is defect D1 exactly: a 144Hz
+// monitor pulled 2.4x as many numbers off the round's stream as a 60Hz one.
+export const fxRandom = () => Math.random();
+export const fxRange = (a, b) => a + Math.random() * (b - a);
+export const fxPick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
 export function addShake(v) { shake = Math.min(shake + v, 26); }
 export function doFlash(color, alpha = 0.4) { flashColor = color; flashAlpha = Math.max(flashAlpha, alpha); }
 
 export function spawnParticles(x, y, color, count, speed, life = 40) {
   for (let i = 0; i < count; i++) {
-    const a = rnd() * Math.PI * 2, v = rnd() * speed;
-    particles.push({ kind: 'square', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2, life: life + rnd() * 20, maxLife: life, color, r: 2 + rnd() * 3 });
+    const a = fxRandom() * Math.PI * 2, v = fxRandom() * speed;
+    particles.push({ kind: 'square', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2, life: life + fxRandom() * 20, maxLife: life, color, r: 2 + fxRandom() * 3 });
   }
 }
 
@@ -44,16 +51,16 @@ export function spawnRing(x, y, color) {
 }
 
 // flexible bespoke burst — kind/shape/spread/drift/gravity all tunable. Powers
-// per-hybrid signature VFX; broadcast to LAN like the other cosmetic emitters.
+// per-hybrid signature VFX.
 //   dir: aim (rad, 0 = right)   spread: cone width   up: initial lift
 //   g: per-particle gravity (negative = rises, e.g. steam/smoke)
 export function spawnBurst(x, y, color, count = 12, o = {}) {
   const kind = o.kind || 'square', speed = o.speed ?? 5, spread = o.spread ?? Math.PI * 2;
   const dir = o.dir ?? 0, up = o.up ?? 0, life = o.life ?? 40, g = o.g ?? 0.25, r = o.r ?? 3;
   for (let i = 0; i < count; i++) {
-    const a = dir + (rnd() - 0.5) * spread;
-    const v = speed * (0.4 + rnd() * 0.9);
-    particles.push({ kind, x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - up, life: life + rnd() * 15, maxLife: life, color, r: r * (0.6 + rnd() * 0.8), g });
+    const a = dir + (fxRandom() - 0.5) * spread;
+    const v = speed * (0.4 + fxRandom() * 0.9);
+    particles.push({ kind, x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - up, life: life + fxRandom() * 15, maxLife: life, color, r: r * (0.6 + fxRandom() * 0.8), g });
   }
 }
 
@@ -61,16 +68,13 @@ export function spawnText(x, y, str, color) {
   particles.push({ kind: 'text', str, x, y, vx: 0, vy: -1.2, life: 50, maxLife: 50, color, r: 16 });
 }
 
-// a fully-described particle: the sim sites that used to push one directly, and
-// the draw-path ambience in this layer. `spec` is the particle itself.
-export function pushParticle(spec) { particles.push(spec); }
+// one fully-described particle. The sim emits these for the handful of bespoke
+// looks the five spawners above cannot express (rain, embers off an icicle, a
+// ghost's grip sparks). They were never on the wire and still are not — the
+// spec object is the whole event.
+export function pushParticle(spec) { particles.push({ ...spec }); }
 
-export function clearFx() {
-  particles.length = 0;
-  shake = 0;
-  flashColor = '#fff';
-  flashAlpha = 0;
-}
+export function clearParticles() { particles.length = 0; }
 
 export function updateParticles(ts) {
   for (let i = particles.length - 1; i >= 0; i--) {
@@ -89,61 +93,63 @@ export function updateParticles(ts) {
   }
 }
 
-// Particle `life` is counted in TICKS, and it used to be decremented inside
-// stepSim so it stayed on the sim's clock through a hitstop (the tick loop
-// consumes ticks slower, so the sparks slow with everything else). Stepping
-// moved out of the sim with the array, so it follows the tick counter instead
-// of being pushed by it: one step per sim tick that has elapsed since the last
-// frame, which is the same number stepSim used to take. MAX_CATCHUP bounds a
-// backgrounded tab the same way the sim's own accumulator does.
-let steppedTo = currentTick();
-export function stepFx() {
-  const n = Math.min(currentTick() - steppedTo, MAX_CATCHUP);
-  steppedTo = currentTick();
-  for (let i = 0; i < n; i++) updateParticles(1);
-}
-
 export function drawParticles() {
   drawStoryParticles(ctx, particles); // storybook embers/motes/sigil rings (render/artkit.js)
 }
 
-// ---- the drain ----
-// Every name the sim can emit has an entry here, and an unknown one throws
-// rather than being skipped. This channel is closed — sim and render ship in
-// the same bundle — so an emitted name with no handler is a bug in this repo,
-// not hostile input, and swallowing it is how a cosmetic goes missing in
-// silence. (The OPEN channel, where a remote server's names arrive, is
-// src/net/client.js's FX_ALLOWED; that one drops unknowns on purpose.)
+// ---- draining the sim's cosmetic queue ----------------------------------
 //
-// The four no-ops are the dual-path cosmetics: slowMo, setBanner, addKillFeed
-// and boltVisual each also write sim state, so the sim calls them for real AND
-// emits them for the wire. Applying them again here would double them.
+// Three of the ten wire names do nothing here, and each for a stated reason
+// rather than by omission:
+//
+//   slowMo      — pace is simulation as well as spectacle, so src/sim/pace.js
+//                 applies it directly AND emits it. Applying it again on the
+//                 way out would double the hitstop locally. A LAN client has no
+//                 sim, so its handler (src/net/client.js) is the real slowMo.
+//   setBanner   — the banner text lives in src/sim/match.js and the HUD reads
+//                 it there; the emit exists so a LAN client, which has no
+//                 match.js state of its own, gets told.
+//   addKillFeed — same shape as setBanner, against src/sim/awards.js.
+//
+// A name with no handler at all is a different thing and is NOT silently
+// ignored: it is recorded, and test/emit-apply.test.js asserts that every name
+// src/sim can emit is handled here.
 const HANDLERS = {
   __proto__: null,
   spawnParticles,
   spawnRing,
-  spawnBurst,
   spawnText,
+  spawnBurst,
   doFlash,
   addShake,
+  boltVisual,
   particle: pushParticle,
-  clearFx,
+  clearParticles,
   slowMo: () => {},
   setBanner: () => {},
   addKillFeed: () => {},
-  boltVisual: () => {},
 };
+
+const unhandled = new Set();
+export const unhandledEmitted = () => [...unhandled];
+export const handledEmitNames = () => ['sfx', ...Object.keys(HANDLERS)];
 
 export function applyEmitted(events) {
   for (const e of events) {
     if (e.f === 'sfx') { playSfx(e.a[0]); continue; }
-    const fn = HANDLERS[e.f];
-    if (!fn) throw new Error(`no renderer for emitted cosmetic '${e.f}'`);
-    fn(...e.a);
+    const h = HANDLERS[e.f];
+    if (h) h(...e.a);
+    else unhandled.add(e.f);
   }
 }
 
-// exported for the boundary test: the set of names this layer can apply
-export const emittedNames = () => [...Object.keys(HANDLERS), 'sfx'];
+// One call, so the couch entry and any harness that steps the sim by hand can
+// pump cosmetics without knowing the queue exists.
+export function pumpEmitted() { applyEmitted(drainEmitted()); }
 
-onWorldReset(() => { clearFx(); steppedTo = currentTick(); });
+onWorldReset(() => {
+  particles.length = 0;
+  shake = 0;
+  flashColor = '#fff';
+  flashAlpha = 0;
+});

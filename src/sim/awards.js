@@ -2,8 +2,8 @@
 // ceremony. Stats live per slot and reset when a fresh match starts (first round
 // out of the lobby). The kill feed and the awards panel are drawn in
 // src/render/hud.js; what is here is the ledger behind them.
-import { emit } from './emit.js';
 import { simNow } from './time.js';
+import { emit } from './emit.js';
 import { onWorldReset } from './world.js';
 import { players } from './player/lifecycle.js';
 import { telDeath, telKill } from './telemetry.js';
@@ -23,17 +23,18 @@ export function resetMatchStats() {
   killFeedLines.length = 0;
 }
 
-// A dual-path cosmetic, like setBanner, slowMo and boltVisual: the ledger is
-// sim state that src/render/hud.js reads back, so the line goes in here AND the
-// call is emitted so LAN clients replay the feed. The renderer's handler for
-// 'addKillFeed' is a no-op — locally the line is already in the list.
+// Dual path, like setBanner: the feed is a local ledger src/render/hud.js reads
+// straight off this module, AND it is narration a LAN client can only learn
+// about from an event. Emit first, then record, matching the order the old
+// server-side wrapper used.
+//
 // The trailing slots aren't rendered — they let headless clients (Alinea)
 // attribute kills exactly instead of guessing by proximity.
 export function addKillFeed(...a) {
+  emit('addKillFeed', ...a);
   const [aName, aColor, bName, bColor, self] = a;
   killFeedLines.push({ a: aName, ac: aColor, b: bName, bc: bColor, self, at: simNow() });
   if (killFeedLines.length > 5) killFeedLines.shift();
-  emit('addKillFeed', ...a); // the caller's arity, unpadded — see setBanner
 }
 
 // called from killPlayer — resolves who gets the credit

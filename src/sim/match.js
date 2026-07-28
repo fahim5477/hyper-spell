@@ -4,10 +4,10 @@ import { W, H, onWorldReset } from './world.js';
 import { addBody, addTo, createBox, createComposite, removeBody } from './phys/facade.js';
 import { clearModifiers, setBase } from './gravity.js';
 import { simNow } from './time.js';
+import { emit } from './emit.js';
 import { simRandom, rand, reseed } from './rng.js';
 import { pairCooldown } from './cooldown.js';
-import { emit } from './emit.js';
-import { clearFx, doFlash } from './fx.js';
+import { clearParticles, doFlash } from './fx.js';
 import { slowMo } from './pace.js';
 import { sfx } from './sfx.js';
 import { scheduleIn, cancelTag } from './schedule.js';
@@ -39,21 +39,20 @@ export function setCurrentMap(m) { currentMap = m; }
 export let banner = '', bannerColor = '#fff', bannerUntil = 0, bannerHyper = false;
 
 
-// A dual-path cosmetic (see the four of them listed in src/sim/fx.js): the
-// banner is sim state — src/render/hud.js and the wire snapshot both read it —
-// so it is set here AND emitted so a LAN client can show the same words. The
-// renderer's handler is a no-op; locally the banner is already set.
-// The rest form is not a stylistic choice: the emitted `a` is JSON-encoded onto
-// the wire, and padding a trailing optional out to `undefined` would arrive as
-// `null` and defeat the receiver's default. The old broadcast wrapper forwarded
-// the caller's arity for the same reason; so does this.
+// Dual path, like slowMo and for a related reason: the banner is state the
+// local HUD reads straight off this module (src/render/hud.js), so the sim has
+// to keep it, and it is also the narration a LAN client — which has no match.js
+// state of its own — can only learn about from an event. Emit first, then set,
+// matching the order the old server-side wrapper used. src/render/fx.js's
+// handler is a no-op for the same reason slowMo's is: locally it is already
+// done by the time anyone drains.
 export function setBanner(...a) {
+  emit('setBanner', ...a);
   const [text, color, ms = 1400, hyper = false] = a;
   banner = text;
   bannerColor = color;
   bannerUntil = simNow() + ms;
   bannerHyper = hyper;
-  emit('setBanner', ...a);
 }
 
 export function loadMap(index) {
@@ -75,7 +74,7 @@ export function loadMap(index) {
   // (a body, a gravity modifier) a hook to let go of it.
   for (const e of activeEffects) e.onAbandon?.();
   activeEffects.length = 0;
-  clearFx(); // the renderer drops its particle field; nothing here owns one
+  clearParticles();
   // Every contact gate goes with the round. The bodies most of them are keyed
   // on have just been removed above, but the wizards' have not — a player
   // object outlives the round, and its stomp/spike gates used to outlive it too.
@@ -272,7 +271,6 @@ export function joinPlayer(controller, name) {
   sfx.pickup();
   setBanner(`${p.name} JOINED`, p.color, 900);
 }
-
 
 const INITIAL_GAME = { state: 'LOBBY', winsNeeded: 5, winner: null, mapIndex: 0, baseGravity: 2, mode: 'versus', wave: 0, waveState: 'active' };
 

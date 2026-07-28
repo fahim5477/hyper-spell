@@ -4,14 +4,16 @@
 import { ctx } from './canvas.js';
 import { W, H } from '../sim/world.js';
 import { allBodies, allJoints, gravityY, jointEnds } from '../sim/phys/facade.js';
-import * as art from './artkit.js';
+// Cosmetic randomness, aliased to the names the ~200 scenery call sites below
+// already use. It is deliberately NOT src/sim/rng.js: this file runs at monitor
+// rate, and every number it used to take off the round's seeded stream made the
+// match a function of the viewer's refresh rate (defect D1).
+import { fxRange as rand, fxPick as pick } from './fx.js';
 import {
   drawStoryBackdrop, drawStoryCrate, drawStoryDestructible, drawStorySpikes, drawStoryTerrain, shade,
 } from './artkit.js';
-import { drainEmitted } from '../sim/emit.js';
 import {
-  applyEmitted, pushParticle, shake, setShake, flashColor, flashAlpha,
-  setFlashAlpha, stepFx,
+  particles, shake, setShake, flashColor, flashAlpha, setFlashAlpha,
 } from './fx.js';
 import { game, currentMap } from '../sim/match.js';
 import { players, gibs } from '../sim/player/lifecycle.js';
@@ -20,7 +22,7 @@ import { isLeafy } from '../sim/maps/builders.js';
 import { envHash, drawVineAt, drawEnvVisualsLive } from './draw-env.js';
 import { drawBossBody } from './draw-boss.js';
 import { drawParticles } from './fx.js';
-import { drawEffects } from './effect-art.js';
+import { drawFxEffects, drawVfx } from './effects.js';
 import { drawTomes } from './draw-pickups.js';
 import {
   drawWizard, drawWizardFigure, drawGhostWisps, drawOffscreenPointers,
@@ -212,7 +214,7 @@ export function drawGeysers(now) {
     ctx.beginPath(); ctx.ellipse(g.x, g.y + 4, 10, 5, 0, 0, Math.PI * 2); ctx.fill();
     const soon = g.nextAt && g.nextAt - now < 700;
     if (soon || Math.random() < 0.08) { // simmer, then boil right before the blast
-      pushParticle({ kind: 'square', x: g.x + rand(-8, 8), y: g.y + 2, vx: 0, vy: soon ? rand(-4, -2) : -1, life: 18, maxLife: 18, color: soon ? '#ffb347' : '#8a7f9e', r: soon ? 3 : 2 });
+      particles.push({ kind: 'square', x: g.x + rand(-8, 8), y: g.y + 2, vx: 0, vy: soon ? rand(-4, -2) : -1, life: 18, maxLife: 18, color: soon ? '#ffb347' : '#8a7f9e', r: soon ? 3 : 2 });
     }
   }
 }
@@ -269,14 +271,14 @@ export function drawDestructible(b, now = performance.now()) {
   const w = b.w || 40, h = b.h || 40;
   const k = b.kind;
   if (k === 'ice') {
-    if (Math.random() < 0.006) pushParticle({ kind: 'glint', x: x + rand(-w / 2, w / 2), y: y + rand(-h / 2, h / 2), vx: 0, vy: 0, life: 34, maxLife: 34, color: '#eaffff', r: 3 });
-    if (Math.random() < 0.003) pushParticle({ kind: 'square', x: x + rand(-w / 2, w / 2), y: y - h / 2, vx: rand(-0.3, 0.3), vy: 0.4, life: 40, maxLife: 40, color: '#ffffff', r: 1.5, g: 0.02 });
+    if (Math.random() < 0.006) particles.push({ kind: 'glint', x: x + rand(-w / 2, w / 2), y: y + rand(-h / 2, h / 2), vx: 0, vy: 0, life: 34, maxLife: 34, color: '#eaffff', r: 3 });
+    if (Math.random() < 0.003) particles.push({ kind: 'square', x: x + rand(-w / 2, w / 2), y: y - h / 2, vx: rand(-0.3, 0.3), vy: 0.4, life: 40, maxLife: 40, color: '#ffffff', r: 1.5, g: 0.02 });
   } else if (k === 'obsidian') {
-    if (Math.random() < 0.01) pushParticle({ x: x + rand(-w / 2, w / 2), y: y - h / 2, vx: rand(-0.2, 0.2), vy: -rand(0.4, 1), life: 36, maxLife: 36, color: '#ff7043', r: 1.6, g: -0.02 });
+    if (Math.random() < 0.01) particles.push({ x: x + rand(-w / 2, w / 2), y: y - h / 2, vx: rand(-0.2, 0.2), vy: -rand(0.4, 1), life: 36, maxLife: 36, color: '#ff7043', r: 1.6, g: -0.02 });
   } else if (k === 'wood' && isLeafy(b.dcolor)) {
-    if (Math.random() < 0.004) pushParticle({ kind: 'leaf', x: x + rand(-w / 2, w / 2), y: y + h / 2 - 4, vx: rand(-0.4, 0.4), vy: 0.3, life: 70, maxLife: 70, color: b.dcolor, r: 2.6 });
+    if (Math.random() < 0.004) particles.push({ kind: 'leaf', x: x + rand(-w / 2, w / 2), y: y + h / 2 - 4, vx: rand(-0.4, 0.4), vy: 0.3, life: 70, maxLife: 70, color: b.dcolor, r: 2.6 });
   } else if (k === 'stone') {
-    if (Math.random() < 0.0015) pushParticle({ kind: 'square', x: x + rand(-w / 2, w / 2), y: y + rand(0, h / 2), vx: 0, vy: 0.5, life: 26, maxLife: 26, color: '#9a8f7a', r: 1.3, g: 0.04 });
+    if (Math.random() < 0.0015) particles.push({ kind: 'square', x: x + rand(-w / 2, w / 2), y: y + rand(0, h / 2), vx: 0, vy: 0.5, life: 26, maxLife: 26, color: '#9a8f7a', r: 1.3, g: 0.04 });
   }
 }
 
@@ -372,7 +374,7 @@ export function drawLava(now) {
   }
   ctx.stroke();
   if (Math.random() < 0.3) {
-    pushParticle({ kind: 'square', x: rand(0, W), y: y + 8, vx: 0, vy: rand(-1.5, -0.5), life: 30, maxLife: 30, color: acid ? '#c5f97d' : '#ff8c5a', r: 3 });
+    particles.push({ kind: 'square', x: rand(0, W), y: y + 8, vx: 0, vy: rand(-1.5, -0.5), life: 30, maxLife: 30, color: acid ? '#c5f97d' : '#ff8c5a', r: 3 });
   }
 }
 
@@ -659,7 +661,7 @@ export function drawVictory(now) {
   drawAwards(game.awards, now);
   drawSpellReport(game.spellReport, now);
   if (Math.random() < 0.6) {
-    pushParticle({ kind: 'confetti', x: rand(0, W), y: -10, vx: rand(-1, 1), vy: rand(1, 3), life: 120, maxLife: 120, color: pick(['#4ecdc4', '#ff6b81', '#ffd166', '#a55eea', '#e8d5ff']), r: 4 });
+    particles.push({ kind: 'confetti', x: rand(0, W), y: -10, vx: rand(-1, 1), vy: rand(1, 3), life: 120, maxLife: 120, color: pick(['#4ecdc4', '#ff6b81', '#ffd166', '#a55eea', '#e8d5ff']), r: 4 });
   }
 }
 
@@ -687,7 +689,10 @@ export function draw(now) {
   drawSummons(now);
   drawGibs();
   drawProjectiles(now);
-  drawEffects(activeEffects, now);
+  // sim-owned effects describe themselves (`vfx`); render-owned ones (bolts)
+  // live entirely in src/render/effects.js
+  for (const e of activeEffects) drawVfx(e, now, ctx);
+  drawFxEffects(now, ctx);
   drawParticles();
   for (const p of players) if (p.alive) drawWizard(p, now);
   drawOffscreenPointers(players.filter(p => p.alive).map(p => ({

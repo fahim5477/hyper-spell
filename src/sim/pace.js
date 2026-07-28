@@ -20,9 +20,9 @@
 // that makes sim time diverge from real time, so it is the one thing that
 // cannot be measured on sim time. test/fixed-timestep.test.js pins this, and
 // test/module-boundaries.test.js carries a named exemption for this file.
-import { emit } from './emit.js';
 import { performance } from './env.js';
 import { onWorldReset } from './world.js';
+import { emit } from './emit.js';
 
 // master game pace: 1 = original, <1 = calmer & more readable so the spectacle
 // (combos, fusions, big spells) registers instead of flashing by. Tune to taste.
@@ -36,10 +36,9 @@ export const BASE_PACE = 0.85;
 // unrecoverable under the fixed timestep: the accumulator gains nothing, so the
 // step never fires, so updatePace never runs and the pace can never climb back.
 // (Before Task 3 that self-healed — the ease ran per frame inside stepSim, not
-// per tick.) Clamping here covers the host and the client alike: the host
-// clamps as it applies the hitstop below and emits the RAW value it was asked
-// for, exactly as the old broadcast wrapper did, and the receiving client
-// clamps the relayed value again on its own way in.
+// per tick.) Clamping here covers the host and the client alike: server-bridge
+// wraps slowMo to broadcast, then calls this, and the receiving client clamps
+// the relayed value again on its own way in.
 const MIN_PACE = 0.05;
 
 // Starts AT the base pace rather than easing down from 1. The old `= 1` was a
@@ -51,20 +50,25 @@ let slowUntil = 0;
 
 export const paceScale = () => scale;
 
-// THE DOCUMENTED EXCEPTION. slowMo is the one cosmetic that is also simulation:
-// it changes how fast the tick loop consumes real time, so a sim that only
-// EMITTED it would not actually slow down. It therefore does both — applies the
-// hitstop here and queues the event — which is exactly what the deleted
-// wrapServerFx did, promoted from a server-only monkeypatch to the definition.
+// THE DUAL PATH, and the one cosmetic that keeps it.
 //
-// The renderer's handler for 'slowMo' is a deliberate no-op (src/render/fx.js):
-// the local sim has already applied it, and applying it twice would restart the
-// beat every frame. Only the wire consumer acts on the event, and the receiving
-// client re-clamps it on its own way in (src/net/client.js).
+// Every other cosmetic left the sim entirely in task 13: the sim emits, and
+// somebody else decides what it looks like. slowMo cannot, because a hitstop is
+// not only spectacle — it changes how fast the tick loop consumes real time, so
+// the sim itself has to apply it or a headless host would run at full speed
+// while every client crawled. So it does both, in this order: emit first, then
+// apply, exactly as the old server-side wrapper did (`emitFx(name, args);
+// return orig(...args)`), so the event a client receives is still ordered
+// against its neighbours the same way.
+//
+// Deleting either half is a live bug and test/emit-apply.test.js pins both: the
+// emit alone leaves a LAN host at full pace, the apply alone leaves every LAN
+// client at full pace. src/render/fx.js's handler for 'slowMo' is deliberately
+// a no-op — the couch sim already applied it here, on the way past.
 export function slowMo(s, ms) {
+  emit('slowMo', s, ms);
   scale = Math.max(MIN_PACE, s);
   slowUntil = performance.now() + ms;
-  emit('slowMo', s, ms);
 }
 
 export function updatePace() {

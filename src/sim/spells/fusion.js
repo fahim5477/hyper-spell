@@ -6,9 +6,9 @@
 // tome pool never drops them — they only exist through fusion.
 //
 // Content file: moved verbatim from js/hybrids.js. The only edits are the module
-// header below and the effect draw() closures, which are now `art` descriptors
-// drawn by src/render/effect-art.js — no canvas anywhere under src/sim.
-import { W, H, column } from '../world.js';
+// header below, and the cosmetics: an effect's draw() closure is now a `vfx`
+// descriptor the renderer interprets. No hybrid's numbers or behaviour moved.
+import { W, column } from '../world.js';
 import {
   addVelocity, createBox, queryRegion, setPosition,
   setVelocity,
@@ -237,8 +237,7 @@ regHybrid('firestorm', {
       net: { k: 'tor', x: start.x, c: '#ff7043' },
       update(now) {
         e.x += e.vx;
-        e.net.x = e.x;   // the LAN client's funnel
-        e.art.x = e.x;   // and the local one — same number, two consumers
+        e.net.x = e.x;
         if (e.x < 50 || e.x > W - 50) e.vx = -e.vx;
         const reach = 110 * m;
         for (const b of queryRegion(column(e.x - reach, e.x + reach), {
@@ -253,7 +252,9 @@ regHybrid('firestorm', {
           if (b.label === 'player' && b.player.alive) b.player.burnUntil = Math.max(b.player.burnUntil || 0, now + 900 * m);
         }
       },
-      art: { k: 'firestorm', x: e.x },
+      // narrower rings, a per-ring heat gradient and a faster sway than the air
+      // tornado's — tracks e.x, which update() moves every tick
+      vfx: { k: 'firetor' },
     };
     activeEffects.push(e);
     spawnBurst(start.x, p.body.position.y, '#ff7043', 16, { dir: -Math.PI / 2, spread: 1.2, speed: 6, up: 3, g: -0.03, life: 40 });
@@ -637,7 +638,7 @@ regHybrid('boobytrap', {
     const t0 = simNow();
     activeEffects.push({
       until: t0 + 900,
-      art: { k: 'fuse', x: cx, y: gy - 10 },
+      vfx: { k: 'blink', x: cx, y: gy - 10, r: 7, a: '#d8b26a', b: '#ff5e57', rate: 0.025 },
       onEnd() {
         explode(cx, gy - 10, 170, 22 * m, 28 * m, p, { selfSafe: true });
         const nw = simNow();

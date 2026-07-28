@@ -9,7 +9,7 @@ import {
   setAngle, setAngularVelocity, setFilter, setPosition, setVelocity,
 } from './phys/facade.js';
 import { simRandom, rand } from './rng.js';
-import { emitParticle } from './fx.js';
+import { spawnParticle } from './fx.js';
 import { updatePace } from './pace.js';
 import { TICK_MS, advanceTick, currentTick, simNow } from './time.js';
 import { drainScheduled } from './schedule.js';
@@ -41,7 +41,7 @@ export function postPhysics(now) {
   for (const fb of [...projectiles]) {
     fb.update?.(fb, now);
     if (simRandom() < 0.7) {
-      emitParticle({ kind: 'square', x: fb.position.x, y: fb.position.y, vx: rand(-0.5, 0.5), vy: rand(-0.5, 0.5), life: 14, maxLife: 14, color: fb.color || '#ffb347', r: 2.5 });
+      spawnParticle({ kind: 'square', x: fb.position.x, y: fb.position.y, vx: rand(-0.5, 0.5), vy: rand(-0.5, 0.5), life: 14, maxLife: 14, color: fb.color || '#ffb347', r: 2.5 });
     }
     if (fb.expireAt && now > fb.expireAt) {
       projectiles.delete(fb);
@@ -154,8 +154,14 @@ export function stepSim() {
   // spinners + phantom platforms
   for (const b of allBodies(currentMap.composite)) {
     // FOLLOW-UP: this hand-rolls the conversion perSecond() now owns, against a
-    // rounded 16.7 rather than the exported LEGACY_FRAME_MS (1000/60 = 16.666…),
-    // so it runs 0.2% fast. Correcting it WOULD move the golden tape, which is
+    // rounded 16.7 rather than the exported LEGACY_FRAME_MS (1000/60 = 16.666…).
+    // The rounded divisor is the LARGER one, so the quotient is the smaller one:
+    // at dt = TICK_MS this multiplies the spin by 0.998004 where perSecond()
+    // would multiply it by exactly 1. The angle increment is too SMALL — the
+    // spinner runs 0.2% SLOW — about 0.7° short per full turn, so it falls
+    // steadily further behind. (The sign matters because the follow-up task
+    // will be scoped from this sentence: the correction must make spinners turn
+    // very slightly FASTER.) Correcting it WOULD move the golden tape, which is
     // why it is left alone here — it needs its own behaviour-contract task.
     if (b.spin) setAngle(b, b.angle + b.spin * (dt / 16.7));
     if (b.phantom) {
@@ -175,12 +181,13 @@ export function stepSim() {
   }
   physStep(Math.max(dt, 0.5));
   postPhysics(now);
-  // Particle life used to be decremented here, one tick per tick. The array
-  // lives in src/render/fx.js now and follows the tick counter from the other
-  // side (stepFx), which takes the same number of steps for the same reason:
-  // `life` is counted in ticks, and the tick loop already runs fewer ticks per
-  // second during a hitstop, so scaling by the pace as well would slow the
-  // sparks twice over.
+  // Particle life used to be stepped here, one tick per tick. It is not the
+  // sim's to step any more: the field lives in src/render/fx.js and whoever
+  // renders it ages it — the couch entry does it inside the same fixed-step
+  // callback that calls this function (src/platform/browser.js), and a LAN
+  // client does it on its own cosmetic tick loop (src/net/client.js). Life is
+  // still counted in ticks in both, which is what keeps a hitstop from slowing
+  // the sparks twice over.
   replayRecord(now);
   // Last: everything above observed `now`, and the state it just produced is
   // the state AT the next tick. Advancing here rather than at the top is what

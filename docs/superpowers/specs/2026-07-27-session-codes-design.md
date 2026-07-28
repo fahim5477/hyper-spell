@@ -69,15 +69,22 @@ over a desk. `normalizeCode()` uppercases and strips non-alphanumerics, so
 
 | Event | Result |
 |---|---|
-| First `{t:'host'}` | mints the code, sets `hostConnId`, replies `session{code, host:true}` |
+| First `{t:'host'}` | mints the code, replies `session{code, host:true}` |
 | Any later `{t:'host'}` | `sessionDenied{reason:'exists'}` |
-| `{t:'join', code}` matching | seat (or reservation) as today, plus `session{code}` |
+| `{t:'join', code}` matching | `session{code}` and a seat (or a reservation, or `joinDenied{reason:'full'}`) |
 | `{t:'join', code}` wrong/absent | `joinDenied{reason:'code'}` |
-| `{t:'endSession'}` from the host | reset to lobby, clear the code |
 | Room empty for `EMPTY_RESET_MS` (60s) | reset to lobby, clear the code |
 
-The host is identified only to authorize `endSession`. If the host drops, the
-session survives — the empty-room timer is what ends it.
+A matching code is what grants access, so a correct code into a full match still
+authorizes the connection: you get `session{code}`, you see the match, and you
+spectate until a seat opens — the behavior a codeless spectator has today.
+
+**Two deviations from the brainstorm, decided while planning.** There is no
+`endSession` message: no screen would drive it, and the empty-room rule already
+ends sessions, so it would be dead protocol surface. And the host is not
+recorded — nothing in the design authorizes anything by host identity, since
+lobby controls are shared by choice. `session{host:true}` remains only as a hint
+to the minting client's own menu, telling it to show the code panel.
 
 **Spectators.** Today every connected socket receives snapshots whether or not
 it joined. A code that still let you watch would be decorative, so snapshots and
@@ -97,7 +104,7 @@ running a build one version behind can watch without a code.
 | C→S | `join{name, code}` | → `you{slot}` + `session{code}`, or `joinDenied{reason:'code'\|'full'}` |
 | S→C | `session{code, host?}` | also the answer to a successful join |
 | S→C | `sessionDenied{reason}` | |
-| C→S | `endSession{}` | ignored unless the sender is the host |
+| S→C | `sessionState{live}` | broadcast when a session opens or ends, so a menu waiting on the other screen flips itself |
 
 Existing messages are unchanged. `proto` is bumped because `join` gains a
 required field; `GAME_VERSION` is not touched (the sim did not change).
@@ -133,6 +140,19 @@ lobby so anyone in the room can read it out.
 
 ## Fixes folded in
 
+0. **`myName` is undefined — online play is broken.** `src/net/client.js` calls
+   `myName()` at lines 118, 139 and 284; nothing in the repository defines it,
+   and `dist/hyperspell.js` carries the same three unresolved references. The
+   ESM refactor (`226341b`) dropped the helper — `cleanName` and `ensureAudio`
+   are still imported into that file and otherwise unused, which is what it
+   consumed. So `ws.onopen` throws before `hello` is sent, `welcome` throws
+   after flipping `netMode` to `'online'` and removing the menu (leaving a
+   seatless spectator the server will not seat, because `room.js` requires
+   `hello`), and the join retry throws out of `netClientFrame` every frame.
+   `server/verify-e2e.js` cannot see this: it builds raw WebSocket frames and
+   never loads the client. Fix: restore `myName()` over the `hs-name-0` key the
+   menu writes, and add a test that fails on any unresolved identifier in the
+   built bundle so the next deletion is caught.
 1. **High-refresh input drop.** `MSG_WINDOW_MAX` (600 per 5s) was sized for
    "input at 60Hz is 300/5s", but `sendInput` runs once per rendered frame, so a
    144Hz display sends 720/5s and `handle()` silently drops the overflow —

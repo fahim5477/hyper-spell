@@ -17088,6 +17088,9 @@
     if (!ws || ws.readyState !== 1) return;
     ws.send(JSON.stringify(msg));
   }
+  function myName() {
+    return cleanName(localStorage.getItem("hs-name-0") || "") || "WIZARD";
+  }
   function connect(h) {
     hooks = h || hooks;
     hooks.status("connecting\u2026");

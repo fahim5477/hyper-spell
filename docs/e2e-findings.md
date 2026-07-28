@@ -146,56 +146,69 @@ would have reported a healthy server the whole time.
 
 ---
 
-## 4. Cosmetic-only spells read as "inert" — the probe cannot see the event queue
+## 4. `statusBolt` spells stopped landing — a bolt that dealt 20 damage now deals none
 
-**Spec:** `e2e/specs/06-spells.spec.js` — any batch; which one moves between runs
-**Seen:** `permafrost` (batch 49-72) on one full run, `lightning` (batch 1-24) and
-`permafrost` on the next. Both pass when their batch is run alone.
-**Severity:** a false failure that moves around — the worst kind to live with,
-because it teaches everyone to ignore a red board.
+**Spec:** `e2e/specs/06-spells.spec.js` — the batch containing `permafrost`;
+`lightning` shows the same shape
+**Severity:** a spell does nothing. Which batch reports it moves between runs,
+which is why it reads as flake at first glance.
 
 ### What happens
 
 `expect(inert, 'these spells cast without changing anything in the world')`
-reports a spell that plainly does something.
+names `permafrost` (and sometimes `lightning`). Both are `statusBolt` spells.
 
-### Root cause: cosmetics stopped being sim state, and the fingerprint reads sim state
+### It is not the probe being blind — the same cast used to land
 
-Before the cosmetics-as-events refactor, `spawnParticles` pushed into an array
-owned by `src/sim/fx.js` *inside the sim step*. `GamePage.fingerprint()` counted
-that array, so a spell whose whole effect was a puff of particles registered as
-evidence immediately.
+Two wizards huddled on arena 0, the caster facing the target, `permafrost`
+granted to slot 0 and cast. The bolt is created (`projectiles` 0 → 1) and is
+gone one tick later in both trees. What differs is what it did on the way:
 
-Now `src/sim/fx.js` queues an event on `src/sim/emit.js`, and it becomes a
-particle only when the RENDERER drains the queue (`applyEmitted` in
-`src/render/fx.js`). The suite advances the game with
-`GamePage.advanceSim()` → `globalThis.HS.stepSim()`, which runs sim ticks and
-never renders a frame — deliberately, because the clock is frozen and rAF never
-fires. So the queue fills and is never drained while the probe looks at it.
+| tree | wizards | hp after one tick |
+|---|---|---|
+| `d000632` (before the cosmetics refactor) | 140 and 195 | `150,130` — **20 damage landed** |
+| after the refactor | 140 and 195, forced to match | `150,150` — nothing |
 
-`src/platform/debug-globals.js` no longer publishes `particles` either, so
-`n(H.particles)` in the fingerprint is 0 on every read, always.
+The second row forces the target to the first row's exact position, so spacing
+is not the variable. Same spell, same places, different outcome.
 
-What is left for such a spell is whatever sim state it happens to touch — a
-projectile still alive at the sample tick, a status timer, damage. `permafrost`
-and `lightning` are both short-lived bolts, which is why they are the two that
-fall through, and why machine load decides which.
+### What is ruled out
 
-### Two candidate fixes, both small
+- **The spell itself.** Called directly — `HS.SPELLS.permafrost.cast(players[0])`
+  — it creates its projectile on both trees, and throws nothing.
+- **Facing.** The caster's `facing` is `+1` with the target to its right.
+- **The launcher.** `aimDir` and `shoot` (`src/sim/spells/core.js`) are
+  deterministic: no RNG, no clock. Identical positions must give an identical
+  launch.
+- **Distance.** Forced equal, above.
 
-- **Count the queue.** Publish `emittedCount()` from `src/sim/emit.js` through
-  `debug-globals.js` and add it to `fingerprint()`. This restores exactly the
-  old sensitivity: a queued cosmetic is evidence the cast did something.
-- **Drain in the harness.** Have `advanceSim()` call the renderer's drain after
-  its ticks, so the browser-side state the probe reads is the state a player
-  would see.
+So the divergence is downstream of the launch — in what the projectile collides
+with, or in how its `onHit` is dispatched. `statusBolt.onHit` only damages and
+applies its status when `other.label === 'player'`; against anything else its
+sole effect is `spawnParticles`, which is why a bolt that stops hitting players
+leaves no trace at all.
 
-The first is a truer statement of what the spec means by "changed the world"; the
-second makes every browser assertion see what a frame would. Whoever owns
-06-spells should pick — this note exists so the choice is made deliberately
-rather than by adding a spell to an ignore list.
+### Why it looks like flake
 
-### Not to be confused with a real inert spell
+When such a bolt leaves no sim-visible trace, the only thing standing between
+the spell and an `inert` report is noise in the fingerprint — I watched
+`lightning` "pass" on a `vel` field flipping `"0.00"` to `"-0.00"`. Whether that
+artifact appears depends on where the wizard happened to settle, so the failing
+batch moves between runs while the underlying bug does not.
 
-The probe still catches those: a spell that touches neither sim state nor the
-cosmetic queue reports on every run, in every batch, and alone.
+### A second, independent effect worth knowing about
+
+Cosmetics are now queued events (`src/sim/emit.js`) that only a rendered frame
+drains, and the harness advances with `stepSim()` under a frozen clock. Measured
+during the probe above: `emittedCount()` climbs to 15 while `particles` stays
+at 26. So even the particle burst a floor-hit produces is invisible to
+`fingerprint()`. This does not cause finding #4 — the damage is missing, not
+just the sparks — but it removes the evidence that would otherwise have made a
+missed bolt obvious, and it is worth fixing in its own right by counting the
+queue in `fingerprint()`.
+
+### Reproduction
+
+Grant `permafrost` to slot 0 in a huddled arena 0, cast, and read `players[1].hp`
+one tick later. Compare against the same steps under
+`HS_E2E_GAME_DIR=<a d000632 checkout>`.

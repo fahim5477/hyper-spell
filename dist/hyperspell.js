@@ -17053,6 +17053,7 @@
   }, denied() {
   } };
   var sessionCodeValue = null;
+  var pendingCode = null;
   var prevCast = false;
   var nextJoinAt = 0;
   function netMode2() {
@@ -17122,7 +17123,7 @@
     emit({ t: "host" });
   }
   function joinSession(code) {
-    sessionCodeValue = code;
+    pendingCode = code;
     emit({ t: "join", name: myName(), code });
   }
   function handleMessage(msg) {
@@ -17292,9 +17293,10 @@
       const me = snapCur.ps.find((q) => q.s === mySlot);
       if (me) aim = Math.atan2(mouse.y - me.y, mouse.x - me.x);
     }
-    if (!joined && sessionCodeValue && cast && !prevCast && now > nextJoinAt) {
+    const retryCode = sessionCodeValue || pendingCode;
+    if (!joined && retryCode && cast && !prevCast && now > nextJoinAt) {
       nextJoinAt = now + 1e3;
-      emit({ t: "join", name: myName(), code: sessionCodeValue });
+      emit({ t: "join", name: myName(), code: retryCode });
     }
     prevCast = cast;
     if (joined) emit({ t: "input", m: move, j: jump ? 1 : 0, c: cast ? 1 : 0, c2: cast2 ? 1 : 0, b: block ? 1 : 0, a: aim });

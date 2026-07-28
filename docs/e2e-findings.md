@@ -143,3 +143,59 @@ Against `d000632`, which contains the fix, all 13 tests pass.
 The lesson worth keeping: this is a *client-side* fault, so `server/verify-e2e.js`
 could not have caught it. Its WebSocket clients speak the protocol perfectly and
 would have reported a healthy server the whole time.
+
+---
+
+## 4. Cosmetic-only spells read as "inert" — the probe cannot see the event queue
+
+**Spec:** `e2e/specs/06-spells.spec.js` — any batch; which one moves between runs
+**Seen:** `permafrost` (batch 49-72) on one full run, `lightning` (batch 1-24) and
+`permafrost` on the next. Both pass when their batch is run alone.
+**Severity:** a false failure that moves around — the worst kind to live with,
+because it teaches everyone to ignore a red board.
+
+### What happens
+
+`expect(inert, 'these spells cast without changing anything in the world')`
+reports a spell that plainly does something.
+
+### Root cause: cosmetics stopped being sim state, and the fingerprint reads sim state
+
+Before the cosmetics-as-events refactor, `spawnParticles` pushed into an array
+owned by `src/sim/fx.js` *inside the sim step*. `GamePage.fingerprint()` counted
+that array, so a spell whose whole effect was a puff of particles registered as
+evidence immediately.
+
+Now `src/sim/fx.js` queues an event on `src/sim/emit.js`, and it becomes a
+particle only when the RENDERER drains the queue (`applyEmitted` in
+`src/render/fx.js`). The suite advances the game with
+`GamePage.advanceSim()` → `globalThis.HS.stepSim()`, which runs sim ticks and
+never renders a frame — deliberately, because the clock is frozen and rAF never
+fires. So the queue fills and is never drained while the probe looks at it.
+
+`src/platform/debug-globals.js` no longer publishes `particles` either, so
+`n(H.particles)` in the fingerprint is 0 on every read, always.
+
+What is left for such a spell is whatever sim state it happens to touch — a
+projectile still alive at the sample tick, a status timer, damage. `permafrost`
+and `lightning` are both short-lived bolts, which is why they are the two that
+fall through, and why machine load decides which.
+
+### Two candidate fixes, both small
+
+- **Count the queue.** Publish `emittedCount()` from `src/sim/emit.js` through
+  `debug-globals.js` and add it to `fingerprint()`. This restores exactly the
+  old sensitivity: a queued cosmetic is evidence the cast did something.
+- **Drain in the harness.** Have `advanceSim()` call the renderer's drain after
+  its ticks, so the browser-side state the probe reads is the state a player
+  would see.
+
+The first is a truer statement of what the spec means by "changed the world"; the
+second makes every browser assertion see what a frame would. Whoever owns
+06-spells should pick — this note exists so the choice is made deliberately
+rather than by adding a spell to an ignore list.
+
+### Not to be confused with a real inert spell
+
+The probe still catches those: a spell that touches neither sim state nor the
+cosmetic queue reports on every run, in every batch, and alone.

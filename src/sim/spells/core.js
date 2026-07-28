@@ -1,9 +1,13 @@
 // spells/core.js — spell core: projectiles, explosions, summons, effects, casting.
 //
-// The effect objects pushed onto activeEffects still carry a draw() — those
-// closures now take the render surface as an argument instead of reaching for a
-// global ctx, which is what keeps sim/ free of a render/ import. Task 13 turns
-// them into emitted events and the drawing moves out entirely.
+// The effect objects pushed onto activeEffects used to carry a draw() closure
+// that issued canvas commands. They carry an `art` DESCRIPTOR now — a plain
+// `{ k, ... }` record naming what the effect looks like — and the drawing lives
+// in src/render/effect-art.js, keyed by `k`. That is what lets a boundary test
+// say "src/sim never names a canvas context" and mean it: a descriptor cannot
+// smuggle a draw call, and the shape is the one the wire already used for the
+// same effects (`net: { k: 'sing', ... }`), so the local and remote pictures
+// are drawn by one table instead of two.
 import { H, onWorldReset } from '../world.js';
 import {
   addBody, allJoints, createCircle, gravityY, queryRadius, queryRay, removeBody,
@@ -11,8 +15,9 @@ import {
 } from '../phys/facade.js';
 import { perSecond, simNow } from '../time.js';
 import { simRandom, rand } from '../rng.js';
+import { emit } from '../emit.js';
 import {
-  particles, spawnParticles, spawnRing, spawnText, addShake, doFlash,
+  emitParticle, spawnParticles, spawnRing, spawnText, addShake, doFlash,
 } from '../fx.js';
 import { slowMo } from '../pace.js';
 import { sfx } from '../sfx.js';
@@ -185,7 +190,13 @@ export function raycastHit(p, angOff = 0) {
   return { hit: hit?.body ?? null, pt: hit?.point ?? to, from, dir };
 }
 
-function baseBoltVisual(x0, y0, x1, y1, color = '#fff89e', width = 3, life = 130) {
+// A dual-path cosmetic (the four are listed in src/sim/fx.js): the jagged
+// polyline is an activeEffect, which is sim state the round teardown owns and
+// audit() counts, so it is built here AND emitted so LAN clients see the arc.
+// The renderer's 'boltVisual' handler is a no-op — locally the effect is
+// already on the list.
+export function boltVisual(...a) {
+  const [x0, y0, x1, y1, color = '#fff89e', width = 3, life = 130] = a;
   const pts = [{ x: x0, y: y0 }];
   const segs = 9;
   for (let i = 1; i <= segs; i++) {
@@ -196,15 +207,9 @@ function baseBoltVisual(x0, y0, x1, y1, color = '#fff89e', width = 3, life = 130
   }
   activeEffects.push({
     until: simNow() + life,
-    draw(now, ctx) {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = width;
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (const q of pts.slice(1)) ctx.lineTo(q.x, q.y);
-      ctx.stroke();
-    },
+    art: { k: 'bolt', pts, color, width },
   });
+  emit('boltVisual', ...a); // the caller's arity, unpadded — see match.js's setBanner
 }
 
 // B12. The old form stepped y by 12 from the ceiling and returned the first
@@ -283,24 +288,18 @@ export function spawnSingularity(x, y, m = 1, owner = null, opts = {}) {
       }
       if (simRandom() < 0.6) {
         const a = rand(0, Math.PI * 2), dd = rand(60, 180);
-        particles.push({ kind: 'square', x: x + Math.cos(a) * dd, y: y + Math.sin(a) * dd, vx: -Math.cos(a) * 4, vy: -Math.sin(a) * 4, life: 16, maxLife: 16, color: '#a55eea', r: 2.5 });
+        emitParticle({ kind: 'square', x: x + Math.cos(a) * dd, y: y + Math.sin(a) * dd, vx: -Math.cos(a) * 4, vy: -Math.sin(a) * 4, life: 16, maxLife: 16, color: '#a55eea', r: 2.5 });
       }
     },
-    draw(now, ctx) {
-      ctx.fillStyle = '#0a0510';
-      ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#a55eea';
-      ctx.lineWidth = 3;
-      ctx.globalAlpha = 0.5 + 0.3 * Math.sin(now * 0.02);
-      ctx.beginPath(); ctx.arc(x, y, 36 + 5 * Math.sin(now * 0.011), 0, Math.PI * 2); ctx.stroke();
-      ctx.globalAlpha = 1;
-    },
+    art: { k: 'sing', x, y },
     onEnd() { explode(x, y, 160, 18, 25, owner, opts); },
   });
 }
 
 // circular zone effect: calls tick(player) for alive players inside, every tick
-export function makeZone({ x, y, r, life, color, tick, tickBody, draw, onEnd }) {
+// `art` overrides the default translucent disc with a descriptor of the caller's
+// own (see src/render/effect-art.js for the table of kinds).
+export function makeZone({ x, y, r, life, color, tick, tickBody, art, onEnd }) {
   activeEffects.push({
     until: simNow() + life,
     x, y, r,
@@ -320,13 +319,7 @@ export function makeZone({ x, y, r, life, color, tick, tickBody, draw, onEnd }) 
         for (const b of queryRadius({ x, y }, r, { filter: loose })) tickBody(b, now);
       }
     },
-    draw(now, ctx) {
-      if (draw) { draw(now, ctx); return; }
-      ctx.globalAlpha = 0.16 + 0.06 * Math.sin(now * 0.01);
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-      ctx.globalAlpha = 1;
-    },
+    art: art || { k: 'zone', x, y, r, c: color },
     onEnd,
   });
 }
@@ -425,11 +418,6 @@ export function updateEffects(now) {
     }
   }
 }
-
-// the server bridge wraps boltVisual to broadcast it, exactly as it reassigned
-// the global before (server/sim-bridge.js:48)
-export let boltVisual = baseBoltVisual;
-export function setBoltVisual(fn) { boltVisual = fn; }
 
 onWorldReset(() => {
   projectiles.clear();

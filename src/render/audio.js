@@ -1,5 +1,3 @@
-import { sfx } from '../sim/sfx.js';
-
 // audio.js — Web Audio synth SFX, no assets.
 // Layered voices (sub thump + noise body + crackle), a master compressor so
 // 8 wizards casting at once glues instead of clipping, a soft echo send for
@@ -241,15 +239,24 @@ const SFX_DEFS = {
   },
 };
 
-// public sfx table: every play passes the anti-clutter gate first.
-// The table itself lives in sim/sfx.js (the sim fires cues; only the browser can
-// make sound), so this loop replaces its no-op stubs with the real voices.
-for (const [key, fn] of Object.entries(SFX_DEFS)) {
-  sfx[key] = () => {
-    if (!audioCtx) return;
-    const s = gateScale(key);
-    if (!s) return;
-    volScale = s;
-    try { fn(); } finally { volScale = 1; }
-  };
+// The one way to make a sound. Every play passes the anti-clutter gate first.
+//
+// This used to overwrite src/sim/sfx.js's no-op stubs in place, which made the
+// sim's cue table mean different things depending on which modules a bundle had
+// imported — and the server bridge then wrapped the same object again to
+// broadcast. The sim emits a cue name now (src/sim/emit.js); this is the
+// renderer's half of that, reached from src/render/fx.js's applyEmitted and
+// from src/net/client.js when the cue arrives off the wire.
+export function playSfx(key) {
+  const fn = SFX_DEFS[key];
+  if (!fn || !audioCtx) return;
+  const s = gateScale(key);
+  if (!s) return;
+  volScale = s;
+  try { fn(); } finally { volScale = 1; }
 }
+
+// Every cue the sim can fire has a voice here. A key added to SFX_KEYS with no
+// SFX_DEFS entry would simply never make a sound, which is exactly the kind of
+// silent gap this whole task is about; test/sim-purity.test.js pins it.
+export const sfxVoices = () => Object.keys(SFX_DEFS);

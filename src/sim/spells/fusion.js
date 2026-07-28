@@ -6,8 +6,8 @@
 // tome pool never drops them — they only exist through fusion.
 //
 // Content file: moved verbatim from js/hybrids.js. The only edits are the module
-// header below and the effect draw() closures, which now take the render surface
-// as an argument instead of reaching for a global ctx.
+// header below and the effect draw() closures, which are now `art` descriptors
+// drawn by src/render/effect-art.js — no canvas anywhere under src/sim.
 import { W, H, column } from '../world.js';
 import {
   addVelocity, createBox, queryRegion, setPosition,
@@ -237,7 +237,8 @@ regHybrid('firestorm', {
       net: { k: 'tor', x: start.x, c: '#ff7043' },
       update(now) {
         e.x += e.vx;
-        e.net.x = e.x;
+        e.net.x = e.x;   // the LAN client's funnel
+        e.art.x = e.x;   // and the local one — same number, two consumers
         if (e.x < 50 || e.x > W - 50) e.vx = -e.vx;
         const reach = 110 * m;
         for (const b of queryRegion(column(e.x - reach, e.x + reach), {
@@ -252,16 +253,7 @@ regHybrid('firestorm', {
           if (b.label === 'player' && b.player.alive) b.player.burnUntil = Math.max(b.player.burnUntil || 0, now + 900 * m);
         }
       },
-      draw(now, ctx) {
-        ctx.lineWidth = 3;
-        for (let i = 0; i < 5; i++) {
-          const yy = H - 80 - i * 90, w = 24 + i * 20;
-          ctx.strokeStyle = `rgba(255, ${100 + i * 26}, 60, 0.6)`;
-          ctx.beginPath();
-          ctx.ellipse(e.x + Math.sin(now * 0.013 + i) * 9, yy, w, 12, 0, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      },
+      art: { k: 'firestorm', x: e.x },
     };
     activeEffects.push(e);
     spawnBurst(start.x, p.body.position.y, '#ff7043', 16, { dir: -Math.PI / 2, spread: 1.2, speed: 6, up: 3, g: -0.03, life: 40 });
@@ -645,10 +637,7 @@ regHybrid('boobytrap', {
     const t0 = simNow();
     activeEffects.push({
       until: t0 + 900,
-      draw(now, ctx) {
-        ctx.fillStyle = Math.sin(now * 0.025) > 0 ? '#d8b26a' : '#ff5e57';
-        ctx.beginPath(); ctx.arc(cx, gy - 10, 7, 0, Math.PI * 2); ctx.fill();
-      },
+      art: { k: 'fuse', x: cx, y: gy - 10 },
       onEnd() {
         explode(cx, gy - 10, 170, 22 * m, 28 * m, p, { selfSafe: true });
         const nw = simNow();

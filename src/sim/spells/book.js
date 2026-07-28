@@ -2,7 +2,7 @@
 //
 // Content file: moved verbatim from js/spellbook.js. The only edits are the
 // module header below and the effect draw() closures, which now take the render
-// surface as an argument instead of reaching for a global ctx.
+// surface as an `art` descriptor drawn by src/render/effect-art.js.
 import { W, H, column } from '../world.js';
 import {
   addVelocity, allBodies, createBox, createCircle, createPolygon, gravityY,
@@ -12,7 +12,7 @@ import {
 import { push as pushGravity, pop as popGravity } from '../gravity.js';
 import { perSecond, simNow } from '../time.js';
 import { simRandom, rand, pick } from '../rng.js';
-import { particles, spawnParticles, spawnRing, spawnText, addShake, doFlash } from '../fx.js';
+import { emitParticle, spawnParticles, spawnRing, spawnText, addShake, doFlash } from '../fx.js';
 import { slowMo } from '../pace.js';
 import { sfx } from '../sfx.js';
 // `game` is no longer imported: gravflip and moongrav were the last readers of
@@ -186,7 +186,7 @@ regSpell('sticky', {
       setType(fb, 'static');
       activeEffects.push({
         until: simNow() + 900,
-        draw(now, ctx) { ctx.fillStyle = Math.sin(now * 0.03) > 0 ? '#aef05a' : '#fff'; ctx.beginPath(); ctx.arc(fb.position.x, fb.position.y, 4, 0, Math.PI * 2); ctx.fill(); },
+        art: { k: 'stuck', body: fb },
         onEnd() { removeProjectile(fb); explode(fb.position.x, fb.position.y, 160 * m, 24 * m, 40 * m, p); },
       });
     };
@@ -306,13 +306,7 @@ regSpell('skysmite', {
     const t0 = simNow();
     activeEffects.push({
       until: t0 + 550,
-      draw(now, ctx) {
-        ctx.strokeStyle = '#fff89e';
-        ctx.lineWidth = 2;
-        ctx.globalAlpha = 0.35 + 0.4 * Math.abs(Math.sin(now * 0.02));
-        ctx.beginPath(); ctx.arc(x, gy - 8, 26, 0, Math.PI * 2); ctx.stroke();
-        ctx.globalAlpha = 1;
-      },
+      art: { k: 'smite', x, y: gy - 8 },
       onEnd() { skyBolt(x, 45, p, m); },
     });
   },
@@ -425,7 +419,7 @@ regSpell('updraft', {
       { filter: (b) => loose(b) && Math.abs(b.position.x - x) <= reach })) {
       addVelocity(b, { x: 0, y: -18 * m });
     }
-    for (let i = 0; i < 16; i++) particles.push({ kind: 'spark', x: x + rand(-100, 100), y: rand(100, H - 60), vx: 0, vy: -rand(8, 14), life: 20, maxLife: 20, color: '#e0ffff', r: 2 });
+    for (let i = 0; i < 16; i++) emitParticle({ kind: 'spark', x: x + rand(-100, 100), y: rand(100, H - 60), vx: 0, vy: -rand(8, 14), life: 20, maxLife: 20, color: '#e0ffff', r: 2 });
   },
 });
 regSpell('slam', {
@@ -488,7 +482,8 @@ regSpell('tornado', {
       net: { k: 'tor', x: start.x },
       update() {
         e.x += e.vx;
-        e.net.x = e.x;
+        e.net.x = e.x;   // the LAN client's funnel
+        e.art.x = e.x;   // and the local one — same number, two consumers
         if (e.x < 40 || e.x > W - 40) e.vx = -e.vx;
         const reach = 120 * m;
         for (const b of queryRegion(column(e.x - reach, e.x + reach),
@@ -505,17 +500,7 @@ regSpell('tornado', {
           setVelocity(b, { x: b.velocity.x - Math.sign(dx) * perSecond(0.9) + perSecond(rand(-0.5, 0.5)), y: b.velocity.y - perSecond(1.5) * m });
         }
       },
-      draw(now, ctx) {
-        ctx.strokeStyle = 'rgba(207,232,232,0.55)';
-        ctx.lineWidth = 3;
-        for (let i = 0; i < 5; i++) {
-          const yy = H - 80 - i * 90;
-          const w = 26 + i * 22;
-          ctx.beginPath();
-          ctx.ellipse(e.x + Math.sin(now * 0.01 + i) * 8, yy, w, 12, 0, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-      },
+      art: { k: 'tornado', x: e.x },
     };
     activeEffects.push(e);
   },
@@ -547,13 +532,7 @@ regSpell('blizzard', {
         freezeUntil(q, Math.max(q.frozenUntil, now + 200)); // a chill, not a slick
         if (simRandom() < 0.02) damagePlayer(q, 3);
       },
-      draw(now, ctx) {
-        ctx.globalAlpha = 0.14;
-        ctx.fillStyle = '#d8f4ff';
-        ctx.beginPath(); ctx.arc(pos.x, pos.y, 240 * m, 0, Math.PI * 2); ctx.fill();
-        ctx.globalAlpha = 1;
-        for (let i = 0; i < 3; i++) particles.push({ kind: 'square', x: pos.x + rand(-220, 220), y: pos.y + rand(-200, 100), vx: rand(-1, 1), vy: rand(1, 3), life: 24, maxLife: 24, color: '#fff', r: 2 });
-      },
+      art: { k: 'blizzard', x: pos.x, y: pos.y, r: 240 * m },
     });
     sfx.freeze();
   },
@@ -639,7 +618,7 @@ regSpell('phoenixdash', {
     const dir = aimDir(p, 25, 4);
     setVelocity(p.body, { x: dir.x * 25, y: dir.y * 25 - 2 });
     p.invulnUntil = simNow() + 600;
-    for (let i = 0; i < 20; i++) particles.push({ kind: 'spark', x: p.body.position.x - dir.x * i * 4, y: p.body.position.y - dir.y * i * 4 + rand(-8, 8), vx: -dir.x * rand(2, 6), vy: rand(-2, 2), life: 22, maxLife: 22, color: '#ffb347', r: 2.5 });
+    for (let i = 0; i < 20; i++) emitParticle({ kind: 'spark', x: p.body.position.x - dir.x * i * 4, y: p.body.position.y - dir.y * i * 4 + rand(-8, 8), vx: -dir.x * rand(2, 6), vy: rand(-2, 2), life: 22, maxLife: 22, color: '#ffb347', r: 2.5 });
   },
 });
 regSpell('volcanospell', {
@@ -991,7 +970,7 @@ regSpell('confetti', {
   cast(p) {
     const m = p.mega || 1;
     for (let i = 0; i < 24; i++) {
-      particles.push({ kind: 'confetti', x: p.body.position.x + p.facing * 20, y: p.body.position.y - 8, vx: p.facing * rand(4, 14), vy: rand(-8, 2), life: 60, maxLife: 60, color: pick(['#4ecdc4', '#ff6b81', '#ffd166', '#a55eea', '#e8d5ff']), r: 4 });
+      emitParticle({ kind: 'confetti', x: p.body.position.x + p.facing * 20, y: p.body.position.y - 8, vx: p.facing * rand(4, 14), vy: rand(-8, 2), life: 60, maxLife: 60, color: pick(['#4ecdc4', '#ff6b81', '#ffd166', '#a55eea', '#e8d5ff']), r: 4 });
     }
     const t = nearestEnemy(p, 200 * m);
     if (t && Math.sign(t.body.position.x - p.body.position.x) === p.facing) {

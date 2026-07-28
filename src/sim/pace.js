@@ -20,7 +20,6 @@
 // that makes sim time diverge from real time, so it is the one thing that
 // cannot be measured on sim time. test/fixed-timestep.test.js pins this, and
 // test/module-boundaries.test.js carries a named exemption for this file.
-import { emit } from './emit.js';
 import { performance } from './env.js';
 import { onWorldReset } from './world.js';
 
@@ -36,10 +35,9 @@ export const BASE_PACE = 0.85;
 // unrecoverable under the fixed timestep: the accumulator gains nothing, so the
 // step never fires, so updatePace never runs and the pace can never climb back.
 // (Before Task 3 that self-healed — the ease ran per frame inside stepSim, not
-// per tick.) Clamping here covers the host and the client alike: the host
-// clamps as it applies the hitstop below and emits the RAW value it was asked
-// for, exactly as the old broadcast wrapper did, and the receiving client
-// clamps the relayed value again on its own way in.
+// per tick.) Clamping here covers the host and the client alike: server-bridge
+// wraps slowMo to broadcast, then calls this, and the receiving client clamps
+// the relayed value again on its own way in.
 const MIN_PACE = 0.05;
 
 // Starts AT the base pace rather than easing down from 1. The old `= 1` was a
@@ -51,21 +49,12 @@ let slowUntil = 0;
 
 export const paceScale = () => scale;
 
-// THE DOCUMENTED EXCEPTION. slowMo is the one cosmetic that is also simulation:
-// it changes how fast the tick loop consumes real time, so a sim that only
-// EMITTED it would not actually slow down. It therefore does both — applies the
-// hitstop here and queues the event — which is exactly what the deleted
-// wrapServerFx did, promoted from a server-only monkeypatch to the definition.
-//
-// The renderer's handler for 'slowMo' is a deliberate no-op (src/render/fx.js):
-// the local sim has already applied it, and applying it twice would restart the
-// beat every frame. Only the wire consumer acts on the event, and the receiving
-// client re-clamps it on its own way in (src/net/client.js).
-export function slowMo(s, ms) {
-  scale = Math.max(MIN_PACE, s);
-  slowUntil = performance.now() + ms;
-  emit('slowMo', s, ms);
-}
+function baseSlowMo(s, ms) { scale = Math.max(MIN_PACE, s); slowUntil = performance.now() + ms; }
+
+// slowMo stays a reassignable binding: src/net/server-bridge.js wraps it so a
+// headless host broadcasts the hitstop to every client (see WRAPPED there).
+export let slowMo = baseSlowMo;
+export function setSlowMo(fn) { slowMo = fn; }
 
 export function updatePace() {
   if (performance.now() > slowUntil) scale += (BASE_PACE - scale) * 0.08; // ease back to the base pace, not full speed

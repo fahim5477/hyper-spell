@@ -16,6 +16,7 @@ import {
   nameEdit, setNameEdit, nameEditEndAt, setNameEditEndAt, cleanName, PAD_ALPHABET,
 } from '../sim/lobby.js';
 import { ensureAudio } from '../render/audio.js';
+import { sfx } from '../sim/sfx.js';
 import {
   game, setBanner, minPlayers, loadMap, setWins, toggleMode, resetMatch,
   beginFromLobby, joinPlayer, currentMap,
